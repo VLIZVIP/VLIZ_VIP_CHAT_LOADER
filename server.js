@@ -90,7 +90,7 @@ async function ensureSchema() {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, storage: pool ? "postgres" : "memory" });
+  res.json({ ok: true, version: "media-uploads-2", storage: pool ? "postgres" : "memory" });
 });
 
 app.get("/history.tsv", async (req, res, next) => {
