@@ -15,6 +15,7 @@ const memoryMessages = [];
 const memoryMedia = new Map();
 let memoryId = 1;
 let memoryMediaId = 1;
+const supportToken = process.env.SUPPORT_TOKEN || "vliz-support";
 
 app.use(express.urlencoded({ extended: false, limit: "8mb" }));
 app.use(express.json({ limit: "8mb" }));
@@ -29,6 +30,11 @@ function cleanText(value, maxLength) {
 function cleanChannel(value) {
   const channel = cleanText(value, 32).toLowerCase();
   return channel === "public" ? "public" : "support";
+}
+
+function isSupportAdmin(req) {
+  const token = cleanText(req.query.token || req.headers["x-support-token"], 128);
+  return token && token === supportToken;
 }
 
 function cleanMessageType(value) {
@@ -90,27 +96,46 @@ async function ensureSchema() {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, version: "media-uploads-2", storage: pool ? "postgres" : "memory" });
+  res.json({ ok: true, version: "private-support-1", storage: pool ? "postgres" : "memory" });
 });
 
 app.get("/history.tsv", async (req, res, next) => {
   try {
     const channel = cleanChannel(req.query.channel);
+    const clientId = cleanText(req.query.client_id, 128);
+    const supportAdmin = isSupportAdmin(req);
     const limit = Math.min(Math.max(Number(req.query.limit || 200), 1), 500);
     let rows;
 
+    if (channel === "support" && !clientId && !supportAdmin) {
+      res.type("text/tab-separated-values").send("");
+      return;
+    }
+
     if (pool) {
-      const result = await pool.query(
-        `select id, channel, author, client_id, text, message_type, media_id, created_at
-         from chat_messages
-         where channel = $1
-         order by id desc
-         limit $2`,
-        [channel, limit],
-      );
+      const privateSupport = channel === "support" && clientId && !supportAdmin;
+      const result = privateSupport
+        ? await pool.query(
+            `select id, channel, author, client_id, text, message_type, media_id, created_at
+             from chat_messages
+             where channel = $1 and client_id = $2
+             order by id desc
+             limit $3`,
+            [channel, clientId, limit],
+          )
+        : await pool.query(
+            `select id, channel, author, client_id, text, message_type, media_id, created_at
+             from chat_messages
+             where channel = $1
+             order by id desc
+             limit $2`,
+            [channel, limit],
+          );
       rows = result.rows.reverse();
     } else {
-      rows = memoryMessages.filter((message) => message.channel === channel).slice(-limit);
+      rows = memoryMessages
+        .filter((message) => message.channel === channel && (channel !== "support" || supportAdmin || message.client_id === clientId))
+        .slice(-limit);
     }
 
     const body = rows
@@ -134,6 +159,103 @@ app.get("/history.tsv", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+app.get("/support/clients", async (req, res, next) => {
+  try {
+    if (!isSupportAdmin(req)) {
+      res.status(401).json({ ok: false, error: "invalid_support_token" });
+      return;
+    }
+
+    let rows;
+    if (pool) {
+      const result = await pool.query(`
+        select
+          client_id,
+          coalesce(max(author) filter (where author <> 'VLIZ Support'), max(author)) as author,
+          max(created_at) as last_at,
+          count(*)::int as messages
+        from chat_messages
+        where channel = 'support' and client_id <> ''
+        group by client_id
+        order by last_at desc
+        limit 200
+      `);
+      rows = result.rows;
+    } else {
+      const map = new Map();
+      for (const message of memoryMessages) {
+        if (message.channel !== "support" || !message.client_id) continue;
+        const previous = map.get(message.client_id);
+        const author = message.author === "VLIZ Support" && previous ? previous.author : message.author;
+        if (!previous || new Date(message.created_at) > new Date(previous.last_at)) {
+          map.set(message.client_id, {
+            client_id: message.client_id,
+            author,
+            last_at: message.created_at,
+            messages: (previous?.messages || 0) + 1,
+          });
+        } else {
+          previous.messages += 1;
+        }
+      }
+      rows = Array.from(map.values()).sort((a, b) => new Date(b.last_at) - new Date(a.last_at));
+    }
+
+    res.json({ ok: true, clients: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/support", (_req, res) => {
+  res.type("html").send(`<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>VLIZ Support</title>
+  <style>
+    :root{color-scheme:dark;--bg:#08080a;--panel:#121216;--line:#3b2710;--red:#d81f34;--gold:#d8ad3b;--text:#f6f4ef;--muted:#a7a0a0}
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 80% 0,#2a1015,transparent 42%),var(--bg);font-family:Inter,Segoe UI,Arial,sans-serif;color:var(--text)}
+    .app{display:grid;grid-template-columns:290px 1fr;min-height:100vh}.side{border-right:1px solid var(--line);background:rgba(10,10,12,.9);padding:22px}.brand{font-weight:900;font-size:24px;color:var(--gold);letter-spacing:.04em}.sub{color:var(--muted);font-size:12px;margin:4px 0 18px}
+    input,button{border:1px solid var(--line);border-radius:10px;background:#101014;color:var(--text);height:40px;padding:0 12px}button{background:linear-gradient(135deg,var(--red),#971827);font-weight:800;cursor:pointer}
+    .clients{display:grid;gap:9px;margin-top:14px}.client{padding:12px;border:1px solid #2b2020;border-radius:12px;background:#111115;cursor:pointer}.client.active{border-color:var(--gold);box-shadow:0 0 0 1px rgba(216,173,59,.25)}
+    .name{font-weight:800}.meta{color:var(--muted);font-size:12px;margin-top:4px}.chat{display:grid;grid-template-rows:auto 1fr auto;min-width:0}.top{height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px}
+    .messages{padding:22px;overflow:auto;display:flex;flex-direction:column;gap:12px}.msg{max-width:720px;border:1px solid #2a2020;border-radius:14px;padding:12px;background:#121216}.msg.support{align-self:flex-end;border-color:rgba(216,173,59,.55)}.msg img{max-width:280px;border-radius:10px;display:block;margin-top:8px}
+    .composer{display:grid;grid-template-columns:1fr 120px;gap:12px;padding:18px 24px;border-top:1px solid var(--line);background:rgba(10,10,12,.84)}textarea{resize:none;height:70px;border:1px solid var(--line);border-radius:12px;background:#101014;color:var(--text);padding:12px}
+    .empty{color:var(--muted);text-align:center;margin:auto}.tag{color:var(--gold)}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <div class="brand">VLIZ SUPPORT</div>
+      <div class="sub">Panel privado de soporte Railway</div>
+      <input id="token" placeholder="Token de soporte" style="width:100%">
+      <button id="load" style="width:100%;margin-top:10px">Entrar</button>
+      <div id="clients" class="clients"></div>
+    </aside>
+    <main class="chat">
+      <div class="top"><div><b id="title">Selecciona un cliente</b><div class="sub" id="status">Sin conversación activa</div></div><span class="tag">Privado</span></div>
+      <div id="messages" class="messages"><div class="empty">Las conversaciones aparecerán aquí.</div></div>
+      <div class="composer"><textarea id="text" placeholder="Responder al cliente"></textarea><button id="send">Enviar</button></div>
+    </main>
+  </div>
+<script>
+const $=id=>document.getElementById(id);let activeClient="";
+function token(){return $("token").value.trim()}
+function esc(v){return String(v||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function parseTsv(t){return t.trim()?t.trim().split("\\n").map(l=>l.split("\\t")):[]}
+async function loadClients(){const r=await fetch("/support/clients?token="+encodeURIComponent(token()));const j=await r.json();if(!j.ok){alert("Token incorrecto");return}$("clients").innerHTML=j.clients.map(c=>'<div class="client '+(c.client_id===activeClient?'active':'')+'" onclick="openClient(\\''+esc(c.client_id)+'\\')"><div class="name">'+esc(c.author||"Cliente")+'</div><div class="meta">'+esc(c.client_id)+' · '+c.messages+' mensajes</div></div>').join("")}
+async function openClient(id){activeClient=id;$("title").textContent=id;$("status").textContent="Conversación privada";await loadClients();await loadMessages()}
+async function loadMessages(){if(!activeClient)return;const r=await fetch("/history.tsv?channel=support&client_id="+encodeURIComponent(activeClient)+"&limit=300&token="+encodeURIComponent(token()));const rows=parseTsv(await r.text());$("messages").innerHTML=rows.map(p=>{const own=p[2]==="VLIZ Support";const media=p[7]?'<img src="'+esc(p[7])+'">':"";return '<div class="msg '+(own?'support':'')+'"><b>'+esc(p[2])+'</b> <span class="meta">'+esc(p[3])+'</span><div>'+esc(p[6])+'</div>'+media+'</div>'}).join("")||'<div class="empty">Sin mensajes.</div>';$("messages").scrollTop=$("messages").scrollHeight}
+async function send(){if(!activeClient||!$("text").value.trim())return;const body=new URLSearchParams({channel:"support",author:"VLIZ Support",client_id:activeClient,type:"text",text:$("text").value.trim()});await fetch("/message",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body});$("text").value="";await loadMessages();await loadClients()}
+$("load").onclick=loadClients;$("send").onclick=send;setInterval(()=>{if(activeClient)loadMessages();if(token())loadClients()},5000);
+</script>
+</body>
+</html>`);
 });
 
 app.post("/message", async (req, res, next) => {
