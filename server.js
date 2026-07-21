@@ -16,6 +16,8 @@ const memoryMedia = new Map();
 let memoryId = 1;
 let memoryMediaId = 1;
 const supportToken = process.env.SUPPORT_TOKEN || "vliz-support";
+const adminToken = process.env.ADMIN_TOKEN || supportToken;
+const vendorToken = process.env.VENDOR_TOKEN || "vliz-vendedor";
 
 app.use(express.urlencoded({ extended: false, limit: "8mb" }));
 app.use(express.json({ limit: "8mb" }));
@@ -34,7 +36,18 @@ function cleanChannel(value) {
 
 function isSupportAdmin(req) {
   const token = cleanText(req.query.token || req.headers["x-support-token"], 128);
-  return token && token === supportToken;
+  return token && (token === supportToken || token === adminToken);
+}
+
+function supportRole(req) {
+  const token = cleanText(req.query.token || req.headers["x-support-token"], 128);
+  if (token && (token === supportToken || token === adminToken)) return "admin";
+  if (token && token === vendorToken) return "vendedor";
+  return "";
+}
+
+function canUseSupportPanel(req) {
+  return supportRole(req) !== "";
 }
 
 function cleanMessageType(value) {
@@ -96,7 +109,7 @@ async function ensureSchema() {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, version: "private-support-1", storage: pool ? "postgres" : "memory" });
+  res.json({ ok: true, version: "support-roles-media-1", storage: pool ? "postgres" : "memory" });
 });
 
 app.get("/history.tsv", async (req, res, next) => {
@@ -163,7 +176,8 @@ app.get("/history.tsv", async (req, res, next) => {
 
 app.get("/support/clients", async (req, res, next) => {
   try {
-    if (!isSupportAdmin(req)) {
+    const role = supportRole(req);
+    if (!role) {
       res.status(401).json({ ok: false, error: "invalid_support_token" });
       return;
     }
@@ -203,7 +217,29 @@ app.get("/support/clients", async (req, res, next) => {
       rows = Array.from(map.values()).sort((a, b) => new Date(b.last_at) - new Date(a.last_at));
     }
 
-    res.json({ ok: true, clients: rows });
+    res.json({ ok: true, role, clients: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/support/delete-all", async (req, res, next) => {
+  try {
+    if (!isSupportAdmin(req)) {
+      res.status(403).json({ ok: false, error: "admin_required" });
+      return;
+    }
+
+    if (pool) {
+      await pool.query("truncate table chat_messages, chat_media restart identity");
+    } else {
+      memoryMessages.length = 0;
+      memoryMedia.clear();
+      memoryId = 1;
+      memoryMediaId = 1;
+    }
+
+    res.json({ ok: true, deleted: true });
   } catch (error) {
     next(error);
   }
@@ -220,11 +256,11 @@ app.get("/support", (_req, res) => {
     :root{color-scheme:dark;--bg:#08080a;--panel:#121216;--line:#3b2710;--red:#d81f34;--gold:#d8ad3b;--text:#f6f4ef;--muted:#a7a0a0}
     *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 80% 0,#2a1015,transparent 42%),var(--bg);font-family:Inter,Segoe UI,Arial,sans-serif;color:var(--text)}
     .app{display:grid;grid-template-columns:290px 1fr;min-height:100vh}.side{border-right:1px solid var(--line);background:rgba(10,10,12,.9);padding:22px}.brand{font-weight:900;font-size:24px;color:var(--gold);letter-spacing:.04em}.sub{color:var(--muted);font-size:12px;margin:4px 0 18px}
-    input,button{border:1px solid var(--line);border-radius:10px;background:#101014;color:var(--text);height:40px;padding:0 12px}button{background:linear-gradient(135deg,var(--red),#971827);font-weight:800;cursor:pointer}
+    input,button{border:1px solid var(--line);border-radius:10px;background:#101014;color:var(--text);height:40px;padding:0 12px}button{background:linear-gradient(135deg,var(--red),#971827);font-weight:800;cursor:pointer}.ghost{background:#101014;border-color:var(--gold)}.danger{background:linear-gradient(135deg,#65121b,var(--red));display:none}
     .clients{display:grid;gap:9px;margin-top:14px}.client{padding:12px;border:1px solid #2b2020;border-radius:12px;background:#111115;cursor:pointer}.client.active{border-color:var(--gold);box-shadow:0 0 0 1px rgba(216,173,59,.25)}
     .name{font-weight:800}.meta{color:var(--muted);font-size:12px;margin-top:4px}.chat{display:grid;grid-template-rows:auto 1fr auto;min-width:0}.top{height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 24px}
     .messages{padding:22px;overflow:auto;display:flex;flex-direction:column;gap:12px}.msg{max-width:720px;border:1px solid #2a2020;border-radius:14px;padding:12px;background:#121216}.msg.support{align-self:flex-end;border-color:rgba(216,173,59,.55)}.msg img{max-width:280px;border-radius:10px;display:block;margin-top:8px}
-    .composer{display:grid;grid-template-columns:1fr 120px;gap:12px;padding:18px 24px;border-top:1px solid var(--line);background:rgba(10,10,12,.84)}textarea{resize:none;height:70px;border:1px solid var(--line);border-radius:12px;background:#101014;color:var(--text);padding:12px}
+    .composer{display:grid;grid-template-columns:1fr 120px;gap:12px;padding:18px 24px;border-top:1px solid var(--line);background:rgba(10,10,12,.84)}textarea{resize:none;height:70px;border:1px solid var(--line);border-radius:12px;background:#101014;color:var(--text);padding:12px}.emoji{grid-column:1/3;display:flex;gap:8px;flex-wrap:wrap}.emoji button{width:38px;height:34px;padding:0;background:#121216;border-color:rgba(216,173,59,.45);font-size:18px}
     .empty{color:var(--muted);text-align:center;margin:auto}.tag{color:var(--gold)}
   </style>
 </head>
@@ -235,24 +271,29 @@ app.get("/support", (_req, res) => {
       <div class="sub">Panel privado de soporte Railway</div>
       <input id="token" placeholder="Token de soporte" style="width:100%">
       <button id="load" style="width:100%;margin-top:10px">Entrar</button>
+      <button id="wipe" class="danger" style="width:100%;margin-top:10px">Eliminar todos los chats</button>
       <div id="clients" class="clients"></div>
     </aside>
     <main class="chat">
-      <div class="top"><div><b id="title">Selecciona un cliente</b><div class="sub" id="status">Sin conversación activa</div></div><span class="tag">Privado</span></div>
+      <div class="top"><div><b id="title">Selecciona un cliente</b><div class="sub" id="status">Sin conversación activa</div></div><span class="tag" id="role">Sin rol</span></div>
       <div id="messages" class="messages"><div class="empty">Las conversaciones aparecerán aquí.</div></div>
-      <div class="composer"><textarea id="text" placeholder="Responder al cliente"></textarea><button id="send">Enviar</button></div>
+      <div class="composer"><textarea id="text" placeholder="Responder al cliente"></textarea><button id="send">Enviar</button><div id="emoji" class="emoji"></div></div>
     </main>
   </div>
 <script>
-const $=id=>document.getElementById(id);let activeClient="";
+const $=id=>document.getElementById(id);let activeClient="";let activeRole="";
+const emojiList=["❤","😍","😒","👌","😘","😊","😂","🤣","✌","🤞","😉","😎","🎶","😢","💖","😜","👏","✔","👀","😃"];
 function token(){return $("token").value.trim()}
 function esc(v){return String(v||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
 function parseTsv(t){return t.trim()?t.trim().split("\\n").map(l=>l.split("\\t")):[]}
-async function loadClients(){const r=await fetch("/support/clients?token="+encodeURIComponent(token()));const j=await r.json();if(!j.ok){alert("Token incorrecto");return}$("clients").innerHTML=j.clients.map(c=>'<div class="client '+(c.client_id===activeClient?'active':'')+'" onclick="openClient(\\''+esc(c.client_id)+'\\')"><div class="name">'+esc(c.author||"Cliente")+'</div><div class="meta">'+esc(c.client_id)+' · '+c.messages+' mensajes</div></div>').join("")}
+function renderEmojis(){$("emoji").innerHTML=emojiList.map(e=>'<button type="button" onclick="addEmoji(\\''+e+'\\')">'+e+'</button>').join("")}
+function addEmoji(e){$("text").value+=e;$("text").focus()}
+async function loadClients(){const r=await fetch("/support/clients?token="+encodeURIComponent(token()));const j=await r.json();if(!j.ok){alert("Token incorrecto");return}activeRole=j.role||"";$("role").textContent=activeRole?activeRole.toUpperCase():"Sin rol";$("wipe").style.display=activeRole==="admin"?"block":"none";$("clients").innerHTML=j.clients.map(c=>'<div class="client '+(c.client_id===activeClient?'active':'')+'" onclick="openClient(\\''+esc(c.client_id)+'\\')"><div class="name">'+esc(c.author||"Cliente")+'</div><div class="meta">'+esc(c.client_id)+' · '+c.messages+' mensajes</div></div>').join("")}
 async function openClient(id){activeClient=id;$("title").textContent=id;$("status").textContent="Conversación privada";await loadClients();await loadMessages()}
 async function loadMessages(){if(!activeClient)return;const r=await fetch("/history.tsv?channel=support&client_id="+encodeURIComponent(activeClient)+"&limit=300&token="+encodeURIComponent(token()));const rows=parseTsv(await r.text());$("messages").innerHTML=rows.map(p=>{const own=p[2]==="VLIZ Support";const media=p[7]?'<img src="'+esc(p[7])+'">':"";return '<div class="msg '+(own?'support':'')+'"><b>'+esc(p[2])+'</b> <span class="meta">'+esc(p[3])+'</span><div>'+esc(p[6])+'</div>'+media+'</div>'}).join("")||'<div class="empty">Sin mensajes.</div>';$("messages").scrollTop=$("messages").scrollHeight}
 async function send(){if(!activeClient||!$("text").value.trim())return;const body=new URLSearchParams({channel:"support",author:"VLIZ Support",client_id:activeClient,type:"text",text:$("text").value.trim()});await fetch("/message",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body});$("text").value="";await loadMessages();await loadClients()}
-$("load").onclick=loadClients;$("send").onclick=send;setInterval(()=>{if(activeClient)loadMessages();if(token())loadClients()},5000);
+async function wipeAll(){if(activeRole!=="admin")return;const ok=confirm("Esto elimina TODOS los chats, imagenes y registros. ¿Continuar?");if(!ok)return;const r=await fetch("/support/delete-all?token="+encodeURIComponent(token()),{method:"POST"});const j=await r.json();if(j.ok){activeClient="";$("messages").innerHTML='<div class="empty">Chats eliminados.</div>';$("title").textContent="Selecciona un cliente";await loadClients()}else alert("No se pudo eliminar")}
+$("load").onclick=loadClients;$("send").onclick=send;$("wipe").onclick=wipeAll;renderEmojis();setInterval(()=>{if(activeClient)loadMessages();if(token())loadClients()},5000);
 </script>
 </body>
 </html>`);
@@ -264,14 +305,15 @@ app.post("/message", async (req, res, next) => {
     const author = cleanText(req.body.author, 48) || "Usuario";
     const clientId = cleanText(req.body.client_id, 128);
     const type = cleanMessageType(req.body.type);
-    const text = cleanText(req.body.text, type === "image" ? 140 : 500);
+    const hasMedia = type === "image" || type === "sticker";
+    const text = cleanText(req.body.text, hasMedia ? 140 : 500);
     const mediaId = Number(req.body.media_id || 0) || null;
 
-    if (!text && type !== "image") {
+    if (!text && !hasMedia) {
       res.status(400).json({ ok: false, error: "empty_message" });
       return;
     }
-    if (type === "image" && !mediaId) {
+    if (hasMedia && !mediaId) {
       res.status(400).json({ ok: false, error: "missing_media" });
       return;
     }
