@@ -27,8 +27,16 @@ constexpr const char* chat_server_url = "https://vliz-chat-production.up.railway
 - `GET /health`: prueba si el servidor esta activo.
 - `GET /history.tsv?channel=support&limit=200`: historial de un canal.
 - `POST /message`: guarda mensaje con `channel`, `author`, `client_id` y `text`.
+- `POST /upload-image`: sube imagen base64 con `mime` y `data`.
+- `GET /media/:id`: devuelve la imagen guardada.
 
 Canales usados por el loader:
 
 - `support`
 - `public`
+
+Tipos de mensaje:
+
+- `text`
+- `sticker`
+- `image`
