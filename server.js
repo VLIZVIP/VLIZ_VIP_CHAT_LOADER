@@ -16,6 +16,7 @@ const memoryMedia = new Map();
 const memoryBlocked = new Set();
 let memoryId = 1;
 let memoryMediaId = 1;
+const mediaCacheSalt = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const supportToken = process.env.SUPPORT_TOKEN || "vliz-support";
 const adminToken = process.env.ADMIN_TOKEN || supportToken;
 const vendorToken = process.env.VENDOR_TOKEN || "vliz-vendedor";
@@ -79,6 +80,12 @@ function escapeTsv(value) {
     .replace(/\t/g, "\\t")
     .replace(/\r/g, "\\r")
     .replace(/\n/g, "\\n");
+}
+
+function mediaUrl(mediaId, messageId = "") {
+  if (!mediaId) return "";
+  const version = cleanText(`${mediaCacheSalt}-${messageId || mediaId}`, 96);
+  return `/media/${mediaId}?v=${encodeURIComponent(version)}`;
 }
 
 function timeFromDate(value) {
@@ -190,7 +197,7 @@ app.get("/history.tsv", async (req, res, next) => {
           message.client_id,
           message.message_type || "text",
           message.text,
-          message.media_id ? `/media/${message.media_id}` : "",
+          mediaUrl(message.media_id, message.id),
         ]
           .map(escapeTsv)
           .join("\t"),
@@ -508,7 +515,7 @@ app.post("/upload-image", async (req, res, next) => {
       memoryMedia.set(id, { mime, data });
     }
 
-    res.json({ ok: true, id, url: `/media/${id}` });
+    res.json({ ok: true, id, url: mediaUrl(id) });
   } catch (error) {
     next(error);
   }
