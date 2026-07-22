@@ -61,6 +61,10 @@ function cleanMessageType(value) {
   return "text";
 }
 
+function isPlaceholderText(value) {
+  return cleanText(value, 32).toLowerCase() === "text";
+}
+
 function cleanMime(value) {
   const mime = cleanText(value, 64).toLowerCase();
   if (["image/png", "image/jpeg", "image/jpg", "image/bmp", "image/gif", "image/webp"].includes(mime)) {
@@ -145,12 +149,13 @@ app.get("/history.tsv", async (req, res, next) => {
     }
 
     if (pool) {
-      const privateSupport = channel === "support" && clientId && !supportAdmin;
+      const privateSupport = channel === "support" && clientId;
       const result = privateSupport
         ? await pool.query(
             `select id, channel, author, client_id, text, message_type, media_id, created_at
              from chat_messages
              where channel = $1 and client_id = $2
+               and not (message_type = 'text' and lower(text) = 'text')
              order by id desc
              limit $3`,
             [channel, clientId, limit],
@@ -159,6 +164,7 @@ app.get("/history.tsv", async (req, res, next) => {
             `select id, channel, author, client_id, text, message_type, media_id, created_at
              from chat_messages
              where channel = $1
+               and not (message_type = 'text' and lower(text) = 'text')
              order by id desc
              limit $2`,
             [channel, limit],
@@ -166,7 +172,11 @@ app.get("/history.tsv", async (req, res, next) => {
       rows = result.rows.reverse();
     } else {
       rows = memoryMessages
-        .filter((message) => message.channel === channel && (channel !== "support" || supportAdmin || message.client_id === clientId))
+        .filter((message) =>
+          message.channel === channel &&
+          !(message.message_type === "text" && isPlaceholderText(message.text)) &&
+          (channel !== "support" || (clientId ? message.client_id === clientId : supportAdmin))
+        )
         .slice(-limit);
     }
 
@@ -428,6 +438,10 @@ app.post("/message", async (req, res, next) => {
 
     if (!text && !hasMedia) {
       res.status(400).json({ ok: false, error: "empty_message" });
+      return;
+    }
+    if (type === "text" && isPlaceholderText(text)) {
+      res.status(400).json({ ok: false, error: "placeholder_message" });
       return;
     }
     if (hasMedia && !mediaId) {
