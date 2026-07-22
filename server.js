@@ -129,7 +129,7 @@ async function ensureSchema() {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, version: "public-chat-blocks-1", storage: pool ? "postgres" : "memory" });
+  res.json({ ok: true, version: "1.0.4", storage: pool ? "postgres" : "memory" });
 });
 
 async function isBlockedClient(clientId) {
